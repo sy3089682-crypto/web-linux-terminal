@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - MONGO_URI=mongodb://mongodb:27017/webterminal
+      - JWT_SECRET=super_secret_billion_dollar_key_123
+      - DOCKER_IMAGE_DEFAULT=ubuntu:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./volumes:/root/web-linux-terminal/volumes
+    depends_on:
+      - mongodb
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3001
+    depends_on:
+      - backend
+
+volumes:
+  mongodb_data:

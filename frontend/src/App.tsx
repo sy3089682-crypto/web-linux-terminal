@@ -1,8 +1,9 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import LandingPage from './pages/LandingPage';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import TerminalPage from './pages/TerminalPage';
+import IDEPage from './pages/IDEPage';
 import './App.css';
 
 const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
@@ -16,8 +17,9 @@ function App() {
         <AuthProvider>
             <Router>
                 <Routes>
+                    <Route path="/" element={<LandingPage />} />
                     <Route path="/login" element={<Login />} />
-                    <Route path="/register" element={<Login />} /> {/* Using same component for now */}
+                    <Route path="/register" element={<Login />} />
                     <Route 
                         path="/dashboard" 
                         element={
@@ -30,11 +32,11 @@ function App() {
                         path="/terminal/:id" 
                         element={
                             <PrivateRoute>
-                                <TerminalPage />
+                                <IDEPage />
                             </PrivateRoute>
                         } 
                     />
-                    <Route path="*" element={<Navigate to="/dashboard" />} />
+                    <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
             </Router>
         </AuthProvider>

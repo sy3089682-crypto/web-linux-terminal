@@ -25,6 +25,7 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webterminal
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/instances', require('./routes/instances'));
+app.use('/api/files', require('./routes/files'));
 
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);

@@ -5,9 +5,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import Editor from '@monaco-editor/react';
+import * as Y from 'yjs';
+import { WebsocketProvider } from 'y-websocket';
+import { MonacoBinding } from 'y-monaco';
 import { 
     ChevronLeft, Terminal as TermIcon, Shield, Folder, File as FileIcon, 
-    RefreshCw, Activity, X, Layout, Save, Sparkles, Send, LineChart
+    RefreshCw, Activity, X, Layout, Save, Sparkles, Send, LineChart,
+    FilePlus, FolderPlus, Trash2, MoreVertical, ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -34,6 +38,43 @@ export default function IDEPage() {
     const [aiMessages, setAiMessages] = useState<{ role: string, text: string }[]>([]);
     const [aiInput, setAiInput] = useState('');
     const [isSaving, setIsSaving] = useState(false);
+    const [instance, setInstance] = useState<any>(null);
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: FileItem | null } | null>(null);
+
+    const fetchInstance = async () => {
+        try {
+            const res = await axios.get(`http://localhost:3001/api/instances`);
+            const inst = res.data.find((i: any) => i._id === id);
+            setInstance(inst);
+        } catch (err) {}
+    };
+    const editorRef = useRef<any>(null);
+    const providerRef = useRef<any>(null);
+    const docRef = useRef<Y.Doc | null>(null);
+
+    const setupCollaboration = (editor: any, filePath: string) => {
+        if (providerRef.current) providerRef.current.destroy();
+        if (docRef.current) docRef.current.destroy();
+
+        const doc = new Y.Doc();
+        docRef.current = doc;
+        
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const provider = new WebsocketProvider(
+            `${protocol}//${window.location.hostname}:3001/collaboration`, 
+            `${id}-${filePath}`, 
+            doc
+        );
+        providerRef.current = provider;
+
+        const type = doc.getText('monaco');
+        new MonacoBinding(type, editor.getModel(), new Set([editor]), provider.awareness);
+    };
+
+    const handleEditorDidMount = (editor: any) => {
+        editorRef.current = editor;
+        if (selectedFile) setupCollaboration(editor, selectedFile.path);
+    };
 
     const fetchFiles = async (dir = '') => {
         try {
@@ -49,6 +90,7 @@ export default function IDEPage() {
             const res = await axios.get(`http://localhost:3001/api/files/read?instanceId=${id}&filePath=${file.path}`);
             setFileContent(res.data.content);
             setSelectedFile(file);
+            if (editorRef.current) setupCollaboration(editorRef.current, file.path);
         }
     };
 
@@ -59,20 +101,53 @@ export default function IDEPage() {
         setTimeout(() => setIsSaving(false), 500);
     };
 
-    const handleAISend = () => {
-        if (!aiInput.trim()) return;
-        const userMsg = { role: 'user', text: aiInput };
-        setAiMessages([...aiMessages, userMsg]);
-        setAiInput('');
-        
-        setTimeout(() => {
-            const context = selectedFile ? `Analyzing your file: ${selectedFile.name}...\n` : '';
-            const aiMsg = { role: 'ai', text: `${context}As your Google-tier assistant, I've analyzed your project. Based on your current work, I recommend implementing a Redis cache for your session handling to further optimize latency.` };
-            setAiMessages(prev => [...prev, aiMsg]);
-        }, 1000);
+    const createFile = async () => {
+        const name = prompt('File name:');
+        if (!name) return;
+        const filePath = currentPath ? `${currentPath}/${name}` : name;
+        await axios.post('http://localhost:3001/api/files/create', { instanceId: id, filePath });
+        fetchFiles(currentPath);
     };
 
-    useEffect(() => { fetchFiles(); }, [id]);
+    const createFolder = async () => {
+        const name = prompt('Folder name:');
+        if (!name) return;
+        const dirPath = currentPath ? `${currentPath}/${name}` : name;
+        await axios.post('http://localhost:3001/api/files/mkdir', { instanceId: id, dirPath });
+        fetchFiles(currentPath);
+    };
+
+    const deleteFile = async (file: FileItem) => {
+        if (!confirm(`Delete ${file.name}?`)) return;
+        await axios.delete(`http://localhost:3001/api/files/delete?instanceId=${id}&filePath=${file.path}`);
+        fetchFiles(currentPath);
+    };
+
+    const handleAISend = async () => {
+        if (!aiInput.trim()) return;
+        const userMsg = { role: 'user', text: aiInput };
+        setAiMessages(prev => [...prev, userMsg]);
+        const currentInput = aiInput;
+        setAiInput('');
+        
+        try {
+            const context = selectedFile ? `File: ${selectedFile.name}\nContent:\n${fileContent}` : 'No file selected';
+            const res = await axios.post('http://localhost:3001/api/ai/ask', { 
+                message: currentInput, 
+                fileContext: context 
+            });
+            const aiMsg = { role: 'ai', text: res.data.reply };
+            setAiMessages(prev => [...prev, aiMsg]);
+        } catch (err) {
+            const errorMsg = { role: 'ai', text: "Error: Failed to reach AI service. Please ensure your backend is configured with an API key." };
+            setAiMessages(prev => [...prev, errorMsg]);
+        }
+    };
+
+    useEffect(() => { 
+        fetchFiles(); 
+        fetchInstance();
+    }, [id]);
 
     useEffect(() => {
         if (!terminalRef.current || !token || !id) return;
@@ -137,6 +212,14 @@ export default function IDEPage() {
                             <Save size={14} /> {isSaving ? 'SAVED' : 'SAVE'}
                         </button>
                     )}
+                    {instance?.port && (
+                        <button 
+                            onClick={() => window.open(`http://${window.location.hostname}:${instance.port}`, '_blank')}
+                            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black bg-green-600/10 text-green-500 border border-green-500/20 hover:bg-green-600 hover:text-white transition-all"
+                        >
+                            <ExternalLink size={14} /> WEB PREVIEW
+                        </button>
+                    )}
                     <button onClick={() => setIsStatsOpen(!isStatsOpen)} className={`p-2 rounded-lg transition-all ${isStatsOpen ? 'bg-blue-600 text-white' : 'hover:bg-white/5 text-gray-400'}`}>
                         <Activity size={18} />
                     </button>
@@ -153,12 +236,24 @@ export default function IDEPage() {
                             <aside className="h-full border-r border-white/5 flex flex-col bg-[#0d0d0d]">
                                 <div className="p-4 flex items-center justify-between border-b border-white/5">
                                     <span className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-600">Workspace</span>
-                                    <button onClick={() => fetchFiles(currentPath)} className="text-gray-600 hover:text-white"><RefreshCw size={12} /></button>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={createFile} className="text-gray-600 hover:text-white" title="New File"><FilePlus size={12} /></button>
+                                        <button onClick={createFolder} className="text-gray-600 hover:text-white" title="New Folder"><FolderPlus size={12} /></button>
+                                        <button onClick={() => fetchFiles(currentPath)} className="text-gray-600 hover:text-white"><RefreshCw size={12} /></button>
+                                    </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto p-2">
                                     {currentPath && <button onClick={() => fetchFiles(currentPath.split('/').slice(0, -1).join('/'))} className="w-full flex items-center gap-2 px-3 py-1 text-xs text-blue-500 hover:bg-white/5 rounded">..</button>}
                                     {files.map(file => (
-                                        <button key={file.path} onClick={() => openFile(file)} className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs rounded transition-all group ${selectedFile?.path === file.path ? 'bg-blue-600/10 text-blue-500' : 'hover:bg-white/5'}`}>
+                                        <button 
+                                            key={file.path} 
+                                            onClick={() => openFile(file)} 
+                                            onContextMenu={(e) => {
+                                                e.preventDefault();
+                                                setContextMenu({ x: e.clientX, y: e.clientY, file });
+                                            }}
+                                            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs rounded transition-all group ${selectedFile?.path === file.path ? 'bg-blue-600/10 text-blue-500' : 'hover:bg-white/5'}`}
+                                        >
                                             {file.isDirectory ? <Folder size={14} className="text-blue-500" /> : <FileIcon size={14} className="text-gray-600" />}
                                             <span className="truncate group-hover:text-white">{file.name}</span>
                                         </button>
@@ -175,7 +270,14 @@ export default function IDEPage() {
                             <Panel defaultSize={65}>
                                 <div className="h-full bg-black relative">
                                     {selectedFile ? (
-                                        <Editor theme="vs-dark" defaultLanguage="javascript" value={fileContent} onChange={(val) => setFileContent(val || '')} options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} />
+                                        <Editor 
+                                            theme="vs-dark" 
+                                            defaultLanguage="javascript" 
+                                            value={fileContent} 
+                                            onMount={handleEditorDidMount}
+                                            onChange={(val) => setFileContent(val || '')} 
+                                            options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} 
+                                        />
                                     ) : (
                                         <div className="h-full flex flex-col items-center justify-center text-gray-800">
                                             <div className="w-12 h-12 bg-gray-900 rounded-2xl flex items-center justify-center mb-4"><FileIcon size={24} /></div>
@@ -241,6 +343,22 @@ export default function IDEPage() {
                     )}
                 </PanelGroup>
             </div>
+
+            {contextMenu && (
+                <div 
+                    className="fixed bg-[#111] border border-white/10 rounded-lg shadow-2xl z-[100] p-1 min-w-[120px]"
+                    style={{ top: contextMenu.y, left: contextMenu.x }}
+                    onClick={() => setContextMenu(null)}
+                    onMouseLeave={() => setContextMenu(null)}
+                >
+                    <button 
+                        onClick={() => contextMenu.file && deleteFile(contextMenu.file)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-red-500 hover:bg-red-500/10 rounded transition-all"
+                    >
+                        <Trash2 size={12} /> DELETE
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

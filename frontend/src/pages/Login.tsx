@@ -1,14 +1,24 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate, Link } from 'react-router-dom';
-import { Terminal } from 'lucide-react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
+import { Terminal, Github } from 'lucide-react';
 
 export default function Login() {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
-    const { login } = useAuth();
+    const { login, setAuth } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
+
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const token = params.get('token');
+        if (token) {
+            setAuth(token, {}); // Backend should ideally send user info or we fetch it
+            navigate('/dashboard');
+        }
+    }, [location, setAuth, navigate]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -18,6 +28,10 @@ export default function Login() {
         } catch (err) {
             setError('Invalid credentials');
         }
+    };
+
+    const handleGitHubLogin = () => {
+        window.location.href = 'http://localhost:3001/api/auth/github';
     };
 
     return (
@@ -58,6 +72,18 @@ export default function Login() {
                         Log In
                     </button>
                 </form>
+
+                <div className="relative my-8">
+                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-800"></div></div>
+                    <div className="relative flex justify-center text-xs uppercase"><span className="bg-[#111] px-2 text-gray-500 font-bold">Or continue with</span></div>
+                </div>
+
+                <button 
+                    onClick={handleGitHubLogin}
+                    className="w-full bg-white text-black hover:bg-gray-200 py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+                >
+                    <Github size={20} /> Sign in with GitHub
+                </button>
 
                 <p className="mt-8 text-center text-gray-500 text-sm">
                     Don't have an account? <Link to="/register" className="text-blue-500 hover:underline">Register now</Link>

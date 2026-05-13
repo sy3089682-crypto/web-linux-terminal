@@ -9,6 +9,7 @@ const TEMPLATES = [
     { id: 'blank', name: 'Blank OS', icon: Box, desc: 'Fresh Ubuntu installation' },
     { id: 'nodejs', name: 'Node.js API', icon: Zap, desc: 'Express.js boilerplate pre-injected' },
     { id: 'python', name: 'Python Flask', icon: Code, desc: 'Flask web app environment' },
+    { id: 'react', name: 'React SPA', icon: Layout, desc: 'Vite-style React boilerplate' },
 ];
 
 export default function Dashboard() {
@@ -96,7 +97,7 @@ export default function Dashboard() {
                             
                             <div className="flex justify-between items-start mb-6">
                                 <div className="w-14 h-14 bg-gray-900 rounded-2xl flex items-center justify-center text-3xl group-hover:scale-110 transition-all">
-                                    {inst.template === 'nodejs' ? '🚀' : inst.template === 'python' ? '🐍' : '🐧'}
+                                    {inst.template === 'nodejs' ? '🚀' : inst.template === 'python' ? '🐍' : inst.template === 'react' ? '⚛️' : '🐧'}
                                 </div>
                                 <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${inst.status === 'running' ? 'bg-green-500/10 text-green-500 border border-green-500/20' : 'bg-gray-800 text-gray-400'}`}>
                                     {inst.status}

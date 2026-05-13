@@ -15,6 +15,12 @@ const TEMPLATES = {
     python: {
         'app.py': 'from flask import Flask\napp = Flask(__name__)\n@app.route("/")\ndef hello():\n    return "V-Platform: Python Template Active!"\nif __name__ == "__main__":\n    app.run(host="0.0.0.0", port=8080)',
         'requirements.txt': 'flask'
+    },
+    react: {
+        'src/App.js': 'import React from "react";\nexport default function App() { return <h1>V-Platform: React Template Active!</h1>; }',
+        'src/index.js': 'import React from "react";\nimport ReactDOM from "react-dom";\nimport App from "./App";\nReactDOM.render(<App />, document.getElementById("root"));',
+        'public/index.html': '<!DOCTYPE html>\n<html>\n<head><title>React App</title></head>\n<body><div id="root"></div></body>\n</html>',
+        'package.json': JSON.stringify({ name: 'react-app', version: '1.0.0', dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' } }, null, 2)
     }
 };
 
@@ -36,7 +42,9 @@ router.post('/', auth, async (req, res) => {
         // Inject Template Files
         if (TEMPLATES[template]) {
             for (const [file, content] of Object.entries(TEMPLATES[template])) {
-                await fs.writeFile(path.join(userVolPath, file), content);
+                const filePath = path.join(userVolPath, file);
+                await fs.mkdir(path.dirname(filePath), { recursive: true });
+                await fs.writeFile(filePath, content);
             }
         }
 

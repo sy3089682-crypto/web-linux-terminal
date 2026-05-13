@@ -84,4 +84,29 @@ router.post('/mkdir', auth, async (req, res) => {
     }
 });
 
+// Create empty file
+router.post('/create', auth, async (req, res) => {
+    try {
+        const { instanceId, filePath } = req.body;
+        const fullPath = await getVolPath(instanceId, req.user.id, filePath);
+        await fs.writeFile(fullPath, '', 'utf-8');
+        res.json({ msg: 'File created successfully' });
+    } catch (err) {
+        res.status(500).json({ msg: err.message });
+    }
+});
+
+// Rename file or directory
+router.post('/rename', auth, async (req, res) => {
+    try {
+        const { instanceId, oldPath, newPath } = req.body;
+        const fullOldPath = await getVolPath(instanceId, req.user.id, oldPath);
+        const fullNewPath = await getVolPath(instanceId, req.user.id, newPath);
+        await fs.rename(fullOldPath, fullNewPath);
+        res.json({ msg: 'Renamed successfully' });
+    } catch (err) {
+        res.status(500).json({ msg: err.message });
+    }
+});
+
 module.exports = router;

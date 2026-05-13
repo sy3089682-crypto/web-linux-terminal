@@ -12,10 +12,14 @@ const Instance = require('./models/Instance');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ noServer: true });
+const colWss = new WebSocket.Server({ noServer: true });
 const docker = new Docker();
+const { setupWSConnection } = require('y-websocket/bin/utils');
+const passport = require('passport');
 
 app.use(express.json());
+app.use(passport.initialize());
 
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webterminal')
     .then(() => console.log('MongoDB Connected'))
@@ -24,6 +28,28 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webterminal
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/instances', require('./routes/instances'));
 app.use('/api/files', require('./routes/files'));
+app.use('/api/ai', require('./routes/ai'));
+
+server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const pathname = url.pathname;
+
+    if (pathname === '/collaboration') {
+        colWss.handleUpgrade(request, socket, head, (ws) => {
+            colWss.emit('connection', ws, request);
+        });
+    } else {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+            wss.emit('connection', ws, request);
+        });
+    }
+});
+
+colWss.on('connection', (ws, req) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const room = url.searchParams.get('room') || 'default';
+    setupWSConnection(ws, req, { docName: room });
+});
 
 // Map to track active connections per instance for collaboration
 const instanceConnections = new Map();

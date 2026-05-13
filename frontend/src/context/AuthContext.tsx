@@ -41,8 +41,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         delete axios.defaults.headers.common['x-auth-token'];
     };
 
+    const setAuth = (token: string, user: any) => {
+        localStorage.setItem('token', token);
+        localStorage.setItem('user', JSON.stringify(user));
+        setToken(token);
+        setUser(user);
+    };
+
     return (
-        <AuthContext.Provider value={{ user, token, login, register, logout, loading }}>
+        <AuthContext.Provider value={{ user, token, login, register, logout, setAuth, loading }}>
             {children}
         </AuthContext.Provider>
     );

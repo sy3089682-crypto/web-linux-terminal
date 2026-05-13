@@ -17,15 +17,16 @@ const docker = new Docker();
 
 app.use(express.json());
 
-// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webterminal')
     .then(() => console.log('MongoDB Connected'))
     .catch(err => console.error('MongoDB Connection Error:', err));
 
-// Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/instances', require('./routes/instances'));
 app.use('/api/files', require('./routes/files'));
+
+// Map to track active connections per instance for collaboration
+const instanceConnections = new Map();
 
 wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -33,7 +34,7 @@ wss.on('connection', async (ws, req) => {
     const instanceId = url.searchParams.get('instanceId');
 
     if (!token || !instanceId) {
-        ws.send('Error: Unauthorized or Missing Instance ID\r\n');
+        ws.send('Error: Unauthorized\r\n');
         return ws.close();
     }
 
@@ -41,59 +42,68 @@ wss.on('connection', async (ws, req) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const userId = decoded.id;
 
-        const instance = await Instance.findOne({ _id: instanceId, userId });
-        if (!instance) {
-            ws.send('Error: Instance not found\r\n');
-            return ws.close();
+        const instance = await Instance.findOne({ _id: instanceId });
+        if (!instance) return ws.close();
+
+        // Track connection
+        if (!instanceConnections.has(instanceId)) instanceConnections.set(instanceId, new Set());
+        instanceConnections.get(instanceId).add(ws);
+
+        let container;
+        if (instance.status === 'running' && instance.containerId) {
+            container = docker.getContainer(instance.containerId);
+        } else {
+            const userVolPath = path.resolve(__dirname, '../volumes', instance.userId.toString(), instance.name.replace(/\s+/g, '_'));
+            container = await docker.createContainer({
+                Image: instance.image,
+                Cmd: ['/bin/bash'],
+                AttachStdin: true, AttachStdout: true, AttachStderr: true,
+                Tty: true, OpenStdin: true, StdinOnce: false,
+                WorkingDir: '/workspace',
+                HostConfig: {
+                    Memory: 512 * 1024 * 1024,
+                    Binds: [`${userVolPath}:/workspace`],
+                    PortBindings: { '8080/tcp': [{ HostPort: '0' }] } 
+                }
+            });
+            await container.start();
+            const data = await container.inspect();
+            instance.containerId = data.Id;
+            instance.status = 'running';
+            instance.port = data.NetworkSettings.Ports['8080/tcp'][0].HostPort;
+            await instance.save();
         }
 
-        // Pull image if needed
-        const images = await docker.listImages();
-        if (!images.some(img => img.RepoTags?.includes(instance.image))) {
-            ws.send(`Pulling image ${instance.image}... Please wait.\r\n`);
-            await docker.pull(instance.image);
-        }
+        const stream = await container.attach({ stream: true, stdin: true, stdout: true, stderr: true });
 
-        // Persistent Volume Path
-        const userVolPath = path.resolve(__dirname, '../volumes', userId, instance.name.replace(/\s+/g, '_'));
+        // Stats Streaming Engine
+        const statsStream = await container.stats({ stream: true });
+        statsStream.on('data', (chunk) => {
+            const stats = JSON.parse(chunk.toString());
+            const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
+            const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
+            const cpuPercent = (cpuDelta / systemDelta) * stats.cpu_stats.online_cpus * 100.0;
+            const memUsage = stats.memory_stats.usage;
+            
+            ws.send(JSON.stringify({
+                type: 'stats',
+                data: {
+                    cpu: cpuPercent.toFixed(2),
+                    memory: (memUsage / 1024 / 1024).toFixed(2),
+                    timestamp: new Date().toLocaleTimeString()
+                }
+            }));
+        });
 
-        const container = await docker.createContainer({
-            Image: instance.image,
-            Cmd: ['/bin/bash'],
-            AttachStdin: true,
-            AttachStdout: true,
-            AttachStderr: true,
-            Tty: true,
-            OpenStdin: true,
-            StdinOnce: false,
-            WorkingDir: '/workspace',
-            HostConfig: {
-                Memory: 512 * 1024 * 1024,
-                Binds: [`${userVolPath}:/workspace`],
-                // Port mapping for web previews (dynamic allocation in production, static for prototype)
-                PortBindings: { '8080/tcp': [{ HostPort: '0' }] } 
+        stream.on('data', (chunk) => {
+            // Broadcast terminal output to all connected users (Collaboration)
+            const clients = instanceConnections.get(instanceId);
+            if (clients) {
+                clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) client.send(chunk.toString());
+                });
             }
         });
-
-        await container.start();
-        
-        // Update instance status and container ID
-        const containerData = await container.inspect();
-        instance.containerId = containerData.Id;
-        instance.status = 'running';
-        // Get the dynamically allocated host port for 8080
-        const hostPort = containerData.NetworkSettings.Ports['8080/tcp'][0].HostPort;
-        instance.port = hostPort;
-        await instance.save();
-
-        const stream = await container.attach({
-            stream: true,
-            stdin: true,
-            stdout: true,
-            stderr: true
-        });
-
-        stream.on('data', (chunk) => ws.send(chunk.toString()));
         
         ws.on('message', async (msg) => {
             try {
@@ -109,27 +119,28 @@ wss.on('connection', async (ws, req) => {
         });
 
         ws.on('close', async () => {
-            console.log(`Cleaning up container ${instance.name}...`);
-            try {
-                await container.stop();
-                await container.remove();
-                instance.status = 'stopped';
-                instance.containerId = null;
-                instance.port = null;
-                await instance.save();
-            } catch (e) {
-                console.error('Cleanup error:', e);
+            const clients = instanceConnections.get(instanceId);
+            if (clients) {
+                clients.delete(ws);
+                if (clients.size === 0) {
+                    console.log(`Final user left, cleaning up ${instance.name}...`);
+                    try {
+                        await container.stop();
+                        await container.remove();
+                        instance.status = 'stopped';
+                        instance.containerId = null;
+                        await instance.save();
+                        instanceConnections.delete(instanceId);
+                    } catch (e) {}
+                }
             }
         });
 
     } catch (err) {
-        console.error('Auth/Docker error:', err);
-        ws.send('\r\nError: Failed to launch environment.\r\n');
+        ws.send('Error: Failed to launch environment.\r\n');
         ws.close();
     }
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-    console.log(`🚀 Billion Dollar Terminal Backend running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 Final Transcendence Engine on port ${PORT}`));

@@ -5,6 +5,7 @@ const Instance = require('../models/Instance');
 const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const slugify = require('slugify');
 
 // Template boilerplates
 const TEMPLATES = {
@@ -34,7 +35,9 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
     try {
         const { name, image, template = 'blank' } = req.body;
-        const safeName = name.replace(/\s+/g, '_');
+        const randomSuffix = crypto.randomBytes(3).toString('hex');
+        const slug = `${slugify(name, { lower: true, strict: true })}-${randomSuffix}`;
+        const safeName = slug.replace(/\s+/g, '_');
         const userVolPath = path.resolve(__dirname, '../../volumes', req.user.id, safeName);
         
         await fs.mkdir(userVolPath, { recursive: true });
@@ -52,6 +55,7 @@ router.post('/', auth, async (req, res) => {
             userId: req.user.id,
             name,
             image,
+            slug,
             template,
             status: 'stopped'
         });

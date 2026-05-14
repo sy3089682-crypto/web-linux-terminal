@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const mongoose = require('mongoose');
 const fs = require('fs');
+const httpProxy = require('http-proxy');
 require('dotenv').config();
 
 const Instance = require('./models/Instance');
@@ -146,6 +147,31 @@ wss.on('connection', async (ws, req) => {
 
         ws.on('close', async () => {
             const clients = instanceConnections.get(instanceId);
+            if (clients) {
+                clients.delete(ws);
+                if (clients.size === 0) {
+                    console.log(`Final user left, cleaning up ${instance.name}...`);
+                    try {
+                        await container.stop();
+                        await container.remove();
+                        instance.status = 'stopped';
+                        instance.containerId = null;
+                        await instance.save();
+                        instanceConnections.delete(instanceId);
+                    } catch (e) {}
+                }
+            }
+        });
+
+    } catch (err) {
+        ws.send('Error: Failed to launch environment.\r\n');
+        ws.close();
+    }
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => console.log(`🚀 Final Transcendence Engine on port ${PORT}`));
+= instanceConnections.get(instanceId);
             if (clients) {
                 clients.delete(ws);
                 if (clients.size === 0) {

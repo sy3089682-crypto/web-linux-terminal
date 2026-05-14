@@ -11,7 +11,7 @@ import { MonacoBinding } from 'y-monaco';
 import { 
     ChevronLeft, Terminal as TermIcon, Shield, Folder, File as FileIcon, 
     RefreshCw, Activity, X, Layout, Save, Sparkles, Send, LineChart,
-    FilePlus, FolderPlus, Trash2, MoreVertical, ExternalLink
+    FilePlus, FolderPlus, Trash2, MoreVertical, ExternalLink, UploadCloud, DownloadCloud, Monitor
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -40,6 +40,7 @@ export default function IDEPage() {
     const [isSaving, setIsSaving] = useState(false);
     const [instance, setInstance] = useState<any>(null);
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: FileItem | null } | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchInstance = async () => {
         try {
@@ -121,6 +122,26 @@ export default function IDEPage() {
         if (!confirm(`Delete ${file.name}?`)) return;
         await axios.delete(`http://localhost:3001/api/files/delete?instanceId=${id}&filePath=${file.path}`);
         fetchFiles(currentPath);
+    };
+
+    const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files || e.target.files.length === 0) return;
+        const formData = new FormData();
+        formData.append('file', e.target.files[0]);
+        formData.append('instanceId', id || '');
+        formData.append('dirPath', currentPath);
+        
+        try {
+            await axios.post('http://localhost:3001/api/files/upload', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            fetchFiles(currentPath);
+        } catch (err) {}
+    };
+
+    const handleDownload = (file: FileItem) => {
+        window.open(`http://localhost:3001/api/files/download?instanceId=${id}&filePath=${file.path}&token=${token}`);
+        setContextMenu(null);
     };
 
     const handleAISend = async () => {
@@ -212,9 +233,9 @@ export default function IDEPage() {
                             <Save size={14} /> {isSaving ? 'SAVED' : 'SAVE'}
                         </button>
                     )}
-                    {instance?.port && (
+                    {instance?.slug && (
                         <button 
-                            onClick={() => window.open(`http://${window.location.hostname}:${instance.port}`, '_blank')}
+                            onClick={() => window.open(`http://${instance.slug}.localhost:3001`, '_blank')}
                             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black bg-green-600/10 text-green-500 border border-green-500/20 hover:bg-green-600 hover:text-white transition-all"
                         >
                             <ExternalLink size={14} /> WEB PREVIEW
@@ -237,6 +258,8 @@ export default function IDEPage() {
                                 <div className="p-4 flex items-center justify-between border-b border-white/5">
                                     <span className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-600">Workspace</span>
                                     <div className="flex items-center gap-2">
+                                        <input type="file" className="hidden" ref={fileInputRef} onChange={handleUpload} />
+                                        <button onClick={() => fileInputRef.current?.click()} className="text-gray-600 hover:text-white" title="Upload File"><UploadCloud size={12} /></button>
                                         <button onClick={createFile} className="text-gray-600 hover:text-white" title="New File"><FilePlus size={12} /></button>
                                         <button onClick={createFolder} className="text-gray-600 hover:text-white" title="New Folder"><FolderPlus size={12} /></button>
                                         <button onClick={() => fetchFiles(currentPath)} className="text-gray-600 hover:text-white"><RefreshCw size={12} /></button>
@@ -266,34 +289,45 @@ export default function IDEPage() {
                     <PanelResizeHandle className="w-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
 
                     <Panel defaultSize={62}>
-                        <PanelGroup direction="vertical">
-                            <Panel defaultSize={65}>
-                                <div className="h-full bg-black relative">
-                                    {selectedFile ? (
-                                        <Editor 
-                                            theme="vs-dark" 
-                                            defaultLanguage="javascript" 
-                                            value={fileContent} 
-                                            onMount={handleEditorDidMount}
-                                            onChange={(val) => setFileContent(val || '')} 
-                                            options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} 
-                                        />
-                                    ) : (
-                                        <div className="h-full flex flex-col items-center justify-center text-gray-800">
-                                            <div className="w-12 h-12 bg-gray-900 rounded-2xl flex items-center justify-center mb-4"><FileIcon size={24} /></div>
-                                            <p className="text-[10px] font-black uppercase tracking-widest">Select file to edit</p>
-                                        </div>
-                                    )}
-                                </div>
-                            </Panel>
-                            <PanelResizeHandle className="h-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
-                            <Panel defaultSize={35}>
-                                <div className="h-full bg-black p-2 border-t border-white/5 relative">
-                                    <div className="absolute top-2 right-4 text-[9px] font-black text-gray-800 tracking-widest z-10">CORE-SHELL</div>
-                                    <div className="w-full h-full" ref={terminalRef}></div>
-                                </div>
-                            </Panel>
-                        </PanelGroup>
+                        {instance?.template === 'desktop' ? (
+                            <div className="h-full bg-black relative">
+                                <div className="absolute top-2 right-4 text-[9px] font-black text-blue-500 bg-blue-500/10 px-2 py-1 rounded tracking-widest z-10 flex items-center gap-1"><Monitor size={10} /> CLOUD PC LIVE</div>
+                                <iframe 
+                                    src={`http://${instance.slug}.localhost:3001`} 
+                                    className="w-full h-full border-0 bg-white" 
+                                    title="VDI Session"
+                                />
+                            </div>
+                        ) : (
+                            <PanelGroup direction="vertical">
+                                <Panel defaultSize={65}>
+                                    <div className="h-full bg-black relative">
+                                        {selectedFile ? (
+                                            <Editor 
+                                                theme="vs-dark" 
+                                                defaultLanguage="javascript" 
+                                                value={fileContent} 
+                                                onMount={handleEditorDidMount}
+                                                onChange={(val) => setFileContent(val || '')} 
+                                                options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} 
+                                            />
+                                        ) : (
+                                            <div className="h-full flex flex-col items-center justify-center text-gray-800">
+                                                <div className="w-12 h-12 bg-gray-900 rounded-2xl flex items-center justify-center mb-4"><FileIcon size={24} /></div>
+                                                <p className="text-[10px] font-black uppercase tracking-widest">Select file to edit</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </Panel>
+                                <PanelResizeHandle className="h-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
+                                <Panel defaultSize={35}>
+                                    <div className="h-full bg-black p-2 border-t border-white/5 relative">
+                                        <div className="absolute top-2 right-4 text-[9px] font-black text-gray-800 tracking-widest z-10">CORE-SHELL</div>
+                                        <div className="w-full h-full" ref={terminalRef}></div>
+                                    </div>
+                                </Panel>
+                            </PanelGroup>
+                        )}
                     </Panel>
 
                     {isStatsOpen && (
@@ -351,6 +385,14 @@ export default function IDEPage() {
                     onClick={() => setContextMenu(null)}
                     onMouseLeave={() => setContextMenu(null)}
                 >
+                    {!contextMenu.file?.isDirectory && (
+                        <button 
+                            onClick={() => contextMenu.file && handleDownload(contextMenu.file)}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-white hover:bg-white/10 rounded transition-all"
+                        >
+                            <DownloadCloud size={12} /> DOWNLOAD
+                        </button>
+                    )}
                     <button 
                         onClick={() => contextMenu.file && deleteFile(contextMenu.file)}
                         className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-red-500 hover:bg-red-500/10 rounded transition-all"

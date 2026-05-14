@@ -90,14 +90,17 @@ wss.on('connection', async (ws, req) => {
                 HostConfig: {
                     Memory: 512 * 1024 * 1024,
                     Binds: [`${userVolPath}:/workspace`],
-                    PortBindings: { '8080/tcp': [{ HostPort: '0' }] } 
+                    PortBindings: { '8080/tcp': [{ HostPort: '0' }], '80/tcp': [{ HostPort: '0' }] } 
                 }
             });
             await container.start();
             const data = await container.inspect();
             instance.containerId = data.Id;
             instance.status = 'running';
-            instance.port = data.NetworkSettings.Ports['8080/tcp'][0].HostPort;
+            // Use 80 if it's mapped (like for desktop), otherwise 8080
+            const port80 = data.NetworkSettings.Ports['80/tcp'];
+            const port8080 = data.NetworkSettings.Ports['8080/tcp'];
+            instance.port = port80 ? port80[0].HostPort : (port8080 ? port8080[0].HostPort : null);
             await instance.save();
         }
 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Terminal, Share2, Trash2, ExternalLink, Activity, HardDrive, Shield, Zap, Box, Code } from 'lucide-react';
+import { Plus, Terminal, Share2, Trash2, ExternalLink, Activity, HardDrive, Shield, Zap, Box, Code, Layout, Monitor } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const TEMPLATES = [
@@ -10,6 +10,7 @@ const TEMPLATES = [
     { id: 'nodejs', name: 'Node.js API', icon: Zap, desc: 'Express.js boilerplate pre-injected' },
     { id: 'python', name: 'Python Flask', icon: Code, desc: 'Flask web app environment' },
     { id: 'react', name: 'React SPA', icon: Layout, desc: 'Vite-style React boilerplate' },
+    { id: 'desktop', name: 'Cloud PC (VDI)', icon: Monitor, desc: 'Full Linux Desktop (LXDE) via WebVNC' },
 ];
 
 export default function Dashboard() {
@@ -33,7 +34,8 @@ export default function Dashboard() {
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            await axios.post('http://localhost:3001/api/instances', { name, image, template: selectedTemplate });
+            const finalImage = selectedTemplate === 'desktop' ? 'dorowu/ubuntu-desktop-lxde-vnc' : image;
+            await axios.post('http://localhost:3001/api/instances', { name, image: finalImage, template: selectedTemplate });
             setShowCreate(false);
             setName('');
             fetchInstances();
@@ -97,7 +99,7 @@ export default function Dashboard() {
                             
                             <div className="flex justify-between items-start mb-6">
                                 <div className="w-14 h-14 bg-gray-900 rounded-2xl flex items-center justify-center text-3xl group-hover:scale-110 transition-all">
-                                    {inst.template === 'nodejs' ? '🚀' : inst.template === 'python' ? '🐍' : inst.template === 'react' ? '⚛️' : '🐧'}
+                                    {inst.template === 'nodejs' ? '🚀' : inst.template === 'python' ? '🐍' : inst.template === 'react' ? '⚛️' : inst.template === 'desktop' ? '🖥️' : '🐧'}
                                 </div>
                                 <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${inst.status === 'running' ? 'bg-green-500/10 text-green-500 border border-green-500/20' : 'bg-gray-800 text-gray-400'}`}>
                                     {inst.status}
@@ -119,6 +121,17 @@ export default function Dashboard() {
                                     <div className="text-xs font-bold text-white">NVMe / Persistent</div>
                                 </div>
                             </div>
+
+                            {inst.slug && (
+                                <a 
+                                    href={`http://${inst.slug}.localhost:3001`} 
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mb-6 flex items-center justify-center gap-2 text-xs font-bold bg-white/5 text-gray-300 px-4 py-2 rounded-xl hover:bg-white/10 hover:text-white transition-all border border-white/5"
+                                >
+                                    <ExternalLink size={14} /> {inst.slug}.localhost:3001
+                                </a>
+                            )}
 
                             <div className="flex items-center gap-3">
                                 <button 

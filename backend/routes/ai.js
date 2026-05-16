@@ -41,4 +41,17 @@ router.post('/ask', auth, async (req, res) => {
     }
 });
 
+// Agentic AI — can execute commands, write files, etc.
+router.post('/agent', auth, async (req, res) => {
+    try {
+        const { task, context } = req.body;
+        const { processTask } = require('../services/ai-agent');
+        const result = await processTask(task, context || {});
+        res.json(result);
+    } catch (err) {
+        console.error('AI Agent Error:', err);
+        res.status(500).json({ msg: 'AI Agent Error' });
+    }
+});
+
 module.exports = router;

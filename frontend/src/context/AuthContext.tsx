@@ -1,24 +1,49 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
-import axios from 'axios';
+import { createContext, useState, useEffect, useContext } from 'react';
+import api from '../services/api';
+import type { User } from '../types';
 
-const AuthContext = createContext<any>(null);
+interface AuthContextType {
+    user: User | null;
+    token: string | null;
+    loading: boolean;
+    login: (username: string, password: string) => Promise<void>;
+    register: (username: string, password: string) => Promise<void>;
+    logout: () => void;
+    setAuth: (token: string, user: User) => void;
+}
 
-export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-    const [user, setUser] = useState<any>(null);
+interface AuthProviderProps {
+    children: React.ReactNode;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+function getInitialUser(): User | null {
+    try {
+        const stored = localStorage.getItem('user');
+        return stored ? JSON.parse(stored) : null;
+    } catch {
+        return null;
+    }
+}
+
+export const AuthProvider = ({ children }: AuthProviderProps) => {
+    const [user, setUser] = useState<User | null>(getInitialUser);
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (token) {
-            axios.defaults.headers.common['x-auth-token'] = token;
-            // In a real app, we'd fetch user profile here
-            setUser(JSON.parse(localStorage.getItem('user') || '{}'));
+        const storedToken = localStorage.getItem('token');
+        const storedUser = getInitialUser();
+        if (storedToken && storedUser) {
+            setToken(storedToken);
+            setUser(storedUser);
         }
         setLoading(false);
-    }, [token]);
+    }, []);
 
     const login = async (username: string, password: string) => {
-        const res = await axios.post('http://localhost:3001/api/auth/login', { username, password });
+        const res = await api.post('/api/auth/login', { username, password });
         localStorage.setItem('token', res.data.token);
         localStorage.setItem('user', JSON.stringify(res.data.user));
         setToken(res.data.token);
@@ -26,7 +51,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     };
 
     const register = async (username: string, password: string) => {
-        const res = await axios.post('http://localhost:3001/api/auth/register', { username, password });
+        const res = await api.post('/api/auth/register', { username, password });
         localStorage.setItem('token', res.data.token);
         localStorage.setItem('user', JSON.stringify(res.data.user));
         setToken(res.data.token);
@@ -38,10 +63,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         localStorage.removeItem('user');
         setToken(null);
         setUser(null);
-        delete axios.defaults.headers.common['x-auth-token'];
     };
 
-    const setAuth = (token: string, user: any) => {
+    const setAuth = (token: string, user: User) => {
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(user));
         setToken(token);
@@ -55,4 +79,5 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => useContext(AuthContext);

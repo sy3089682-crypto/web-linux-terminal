@@ -17,7 +17,7 @@ const getVolPath = async (instanceId, userId, subPath = '') => {
 };
 
 // List files in a directory
-...
+router.get('/list', auth, async (req, res) => {
     try {
         const { instanceId, dirPath = '' } = req.query;
         const userVolPath = await getVolPath(instanceId, req.user.id, dirPath);

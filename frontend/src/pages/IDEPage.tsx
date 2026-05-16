@@ -1,70 +1,117 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
+import { Terminal as XTerm } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import api from '../services/api';
 import Editor from '@monaco-editor/react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { MonacoBinding } from 'y-monaco';
-import { 
-    ChevronLeft, Terminal as TermIcon, Shield, Folder, File as FileIcon, 
-    RefreshCw, Activity, X, Layout, Save, Sparkles, Send, LineChart,
-    FilePlus, FolderPlus, Trash2, MoreVertical, ExternalLink, UploadCloud, DownloadCloud, Monitor, 
-    Code, Smartphone, Maximize2
+import {
+    ChevronLeft, Terminal as TermIcon, Shield,
+    X, Save, Sparkles, Send,
+    Monitor, Code, Grid3X3, Command,
+    Fingerprint, Brain, Zap, Globe, History,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { LineChart as ReLineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import '@xterm/xterm/css/xterm.css';
+import 'xterm/css/xterm.css';
+import type { FileItem, Instance, AIMessage } from '../types';
+import DesktopViewer from '../components/DesktopViewer';
+import FileManager from '../components/FileManager';
+import SystemMonitor from '../components/SystemMonitor';
+import QuickActions from '../components/QuickActions';
+import SettingsPanel from '../components/SettingsPanel';
+import CommandPalette from '../components/CommandPalette';
+import AITerminal from '../components/AITerminal';
+import GitClient from '../components/GitClient';
+import AppDashboard from '../components/AppDashboard';
+import MultiDesktop from '../components/MultiDesktop';
+import AIAgent from '../components/AIAgent';
+import FileVersioning from '../components/FileVersioning';
 
-interface FileItem { name: string; isDirectory: boolean; path: string; }
-interface StatPoint { cpu: number; memory: number; timestamp: string; }
+import { initClipboardSync, onClipboard } from '../services/clipboard';
+
+type TabId = 'terminal' | 'editor' | 'desktop' | 'files' | 'stats' | 'settings' | 'git' | 'apps' | 'agent' | 'versions';
+
+const NEURAL_TABS: { id: TabId; icon: React.ComponentType<{ size?: number; className?: string }>; label: string; glow: string }[] = [
+    { id: 'terminal', icon: TermIcon, label: 'Terminal', glow: 'from-emerald-500/20 to-emerald-500/5' },
+    { id: 'editor', icon: Code, label: 'Editor', glow: 'from-blue-500/20 to-blue-500/5' },
+    { id: 'desktop', icon: Monitor, label: 'Desktop', glow: 'from-violet-500/20 to-violet-500/5' },
+    { id: 'files', icon: Grid3X3, label: 'Files', glow: 'from-amber-500/20 to-amber-500/5' },
+    { id: 'agent', icon: Brain, label: 'AI', glow: 'from-purple-500/20 to-purple-500/5' },
+    { id: 'stats', icon: Zap, label: 'Stats', glow: 'from-rose-500/20 to-rose-500/5' },
+    { id: 'git', icon: Globe, label: 'Git', glow: 'from-orange-500/20 to-orange-500/5' },
+    { id: 'versions', icon: History, label: 'Versions', glow: 'from-cyan-500/20 to-cyan-500/5' },
+    { id: 'apps', icon: Command, label: 'Market', glow: 'from-pink-500/20 to-pink-500/5' },
+    { id: 'settings', icon: Fingerprint, label: 'Settings', glow: 'from-gray-500/20 to-gray-500/5' },
+];
+
+const TAB_SHORTCUTS: Record<string, TabId> = {
+    '1': 'terminal', '2': 'editor', '3': 'desktop', '4': 'files',
+    '5': 'agent', '6': 'stats', '7': 'git', '8': 'versions',
+    '9': 'apps', '0': 'settings',
+};
 
 export default function IDEPage() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const { token } = useAuth();
+    const auth = useAuth();
+    const token = auth?.token ?? null;
     const terminalRef = useRef<HTMLDivElement>(null);
-    const xtermRef = useRef<Terminal | null>(null);
-    const [files, setFiles] = useState<FileItem[]>([]);
-    const [currentPath, setCurrentPath] = useState('');
+    const xtermRef = useRef<XTerm | null>(null);
+
     const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
     const [fileContent, setFileContent] = useState('');
-    const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 768);
     const [isAIOpen, setIsAIOpen] = useState(false);
-    const [isStatsOpen, setIsStatsOpen] = useState(false);
-    const [stats, setStats] = useState<StatPoint[]>([]);
-    const [aiMessages, setAiMessages] = useState<{ role: string, text: string }[]>([]);
+    const [aiMessages, setAiMessages] = useState<AIMessage[]>([]);
     const [aiInput, setAiInput] = useState('');
     const [isSaving, setIsSaving] = useState(false);
-    const [instance, setInstance] = useState<any>(null);
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: FileItem | null } | null>(null);
+    const [instance, setInstance] = useState<Instance | null>(null);
     const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-    const [mobileActiveTab, setMobileActiveTab] = useState<'editor' | 'terminal' | 'pc' | 'explorer'>('terminal');
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
+    const [activeTab, setActiveTab] = useState<TabId>('terminal');
+    const [showQuickActions, setShowQuickActions] = useState(false);
+    const [clipboardText, setClipboardText] = useState('');
+    const [showCommandPalette, setShowCommandPalette] = useState(false);
+    const [allFiles, setAllFiles] = useState<{ name: string; path: string }[]>([]);
+    const [isAIOrbExpanded, setIsAIOrbExpanded] = useState(false);
     useEffect(() => {
-        const handleResize = () => {
-            setIsMobile(window.innerWidth <= 768);
-        };
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
+        const h = () => setIsMobile(window.innerWidth <= 768);
+        window.addEventListener('resize', h);
+        return () => window.removeEventListener('resize', h);
     }, []);
 
-    const fetchInstance = async () => {
-        try {
-            const res = await axios.get(`http://localhost:3001/api/instances`);
-            const inst = res.data.find((i: any) => i._id === id);
-            setInstance(inst);
-            if (inst?.template === 'desktop') setMobileActiveTab('pc');
-        } catch (err) {}
-    };
+    useEffect(() => {
+        if (!id) return;
+        api.get(`/api/files/list?instanceId=${id}&dirPath=`).then(res => {
+            const items = res.data || [];
+            const flatten = (files: any[], prefix = ''): { name: string; path: string }[] =>
+                files.flatMap((f: any) =>
+                    f.isDirectory
+                        ? flatten([], `${prefix}${f.name}/`)
+                        : [{ name: f.name, path: `${prefix}${f.name}` }]
+                );
+            setAllFiles(flatten(items));
+        }).catch(() => {});
+    }, [id]);
+
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                setShowCommandPalette(true);
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key >= '0' && e.key <= '9') {
+                e.preventDefault();
+                const tab = TAB_SHORTCUTS[e.key];
+                if (tab) setActiveTab(tab);
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, []);
 
     const editorRef = useRef<any>(null);
-    const providerRef = useRef<any>(null);
+    const providerRef = useRef<WebsocketProvider | null>(null);
     const docRef = useRef<Y.Doc | null>(null);
 
     const setupCollaboration = (editor: any, filePath: string) => {
@@ -73,7 +120,7 @@ export default function IDEPage() {
         const doc = new Y.Doc();
         docRef.current = doc;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const provider = new WebsocketProvider(`${protocol}//${window.location.hostname}:3001/collaboration`, `${id}-${filePath}`, doc);
+        const provider = new WebsocketProvider(`${protocol}//${window.location.host}/collaboration`, `${id}-${filePath}`, doc);
         providerRef.current = provider;
         const type = doc.getText('monaco');
         new MonacoBinding(type, editor.getModel(), new Set([editor]), provider.awareness);
@@ -84,322 +131,366 @@ export default function IDEPage() {
         if (selectedFile) setupCollaboration(editor, selectedFile.path);
     };
 
-    const fetchFiles = async (dir = '') => {
-        try {
-            const res = await axios.get(`http://localhost:3001/api/files/list?instanceId=${id}&dirPath=${dir}`);
-            setFiles(res.data);
-            setCurrentPath(dir);
-        } catch (err) {}
-    };
-
     const openFile = async (file: FileItem) => {
-        if (file.isDirectory) fetchFiles(file.path);
-        else {
-            const res = await axios.get(`http://localhost:3001/api/files/read?instanceId=${id}&filePath=${file.path}`);
+        if (file.isDirectory) return;
+        try {
+            const res = await api.get(`/api/files/read?instanceId=${id}&filePath=${file.path}`);
             setFileContent(res.data.content);
             setSelectedFile(file);
-            if (isMobile) setMobileActiveTab('editor');
+            setActiveTab('editor');
             if (editorRef.current) setupCollaboration(editorRef.current, file.path);
-        }
+        } catch { console.error('Failed to open file'); }
+    };
+
+    const openFileByPath = async (path: string) => {
+        await openFile({ name: path.split('/').pop() || path, path, isDirectory: false });
     };
 
     const saveFile = async () => {
         if (!selectedFile) return;
         setIsSaving(true);
-        await axios.post('http://localhost:3001/api/files/save', { instanceId: id, filePath: selectedFile.path, content: fileContent });
+        await api.post('/api/files/save', { instanceId: id, filePath: selectedFile.path, content: fileContent });
         setTimeout(() => setIsSaving(false), 500);
-    };
-
-    const createFile = async () => {
-        const name = prompt('File name:');
-        if (!name) return;
-        const filePath = currentPath ? `${currentPath}/${name}` : name;
-        await axios.post('http://localhost:3001/api/files/create', { instanceId: id, filePath });
-        fetchFiles(currentPath);
-    };
-
-    const createFolder = async () => {
-        const name = prompt('Folder name:');
-        if (!name) return;
-        const dirPath = currentPath ? `${currentPath}/${name}` : name;
-        await axios.post('http://localhost:3001/api/files/mkdir', { instanceId: id, dirPath });
-        fetchFiles(currentPath);
-    };
-
-    const deleteFile = async (file: FileItem) => {
-        if (!confirm(`Delete ${file.name}?`)) return;
-        await axios.delete(`http://localhost:3001/api/files/delete?instanceId=${id}&filePath=${file.path}`);
-        fetchFiles(currentPath);
-    };
-
-    const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (!e.target.files || e.target.files.length === 0) return;
-        const formData = new FormData();
-        formData.append('file', e.target.files[0]);
-        formData.append('instanceId', id || '');
-        formData.append('dirPath', currentPath);
-        try {
-            await axios.post('http://localhost:3001/api/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
-            fetchFiles(currentPath);
-        } catch (err) {}
-    };
-
-    const handleDownload = (file: FileItem) => {
-        window.open(`http://localhost:3001/api/files/download?instanceId=${id}&filePath=${file.path}&token=${token}`);
-        setContextMenu(null);
     };
 
     const handleAISend = async () => {
         if (!aiInput.trim()) return;
-        const userMsg = { role: 'user', text: aiInput };
-        setAiMessages(prev => [...prev, userMsg]);
+        setAiMessages(prev => [...prev, { role: 'user' as const, text: aiInput }]);
         const currentInput = aiInput;
         setAiInput('');
         try {
             const context = selectedFile ? `File: ${selectedFile.name}\nContent:\n${fileContent}` : 'No file selected';
-            const res = await axios.post('http://localhost:3001/api/ai/ask', { message: currentInput, fileContext: context });
-            const aiMsg = { role: 'ai', text: res.data.reply };
-            setAiMessages(prev => [...prev, aiMsg]);
-        } catch (err) {
-            setAiMessages(prev => [...prev, { role: 'ai', text: "AI Service Unavailable. Check API Key." }]);
+            const res = await api.post('/api/ai/ask', { message: currentInput, fileContext: context });
+            setAiMessages(prev => [...prev, { role: 'ai' as const, text: res.data.reply }]);
+        } catch {
+            setAiMessages(prev => [...prev, { role: 'ai', text: 'AI Service Unavailable. Check API Key.' }]);
         }
     };
 
-    const socketRef = useRef<WebSocket | null>(null);
-
-    const sendKey = (key: string) => {
+    const socketRef = useRef<globalThis.WebSocket | null>(null);
+    const runCommand = useCallback((cmd: string) => {
         if (socketRef.current?.readyState === WebSocket.OPEN) {
-            socketRef.current.send(key);
+            socketRef.current.send(`${cmd}\n`);
         }
-    };
+    }, []);
 
-    useEffect(() => { 
-        fetchFiles(); 
-        fetchInstance();
+    useEffect(() => {
+        let cancelled = false;
+        api.get('/api/instances').then(res => {
+            if (!cancelled) {
+                const inst = res.data.find((i: Instance) => i._id === id);
+                setInstance(inst);
+                if (inst?.template === 'desktop') setActiveTab('desktop');
+            }
+        }).catch(() => console.error('Failed to fetch instance'));
+        return () => { cancelled = true; };
     }, [id]);
 
     useEffect(() => {
         if (!terminalRef.current || !token || !id) return;
-        const term = new Terminal({
+        const term = new XTerm({
             cursorBlink: true,
-            fontFamily: '"Fira Code", monospace',
+            fontFamily: '"Fira Code", "Cascadia Code", monospace',
             fontSize: isMobile ? 12 : 14,
-            theme: { background: '#0a0a0a', foreground: '#d4d4d4', cursor: '#f8f8f2' },
-            allowProposedApi: true
+            theme: { background: '#0a0a0a', foreground: '#d4d4d4', cursor: '#f8f8f2', selectionBackground: '#404040' },
+            allowProposedApi: true,
         });
         const fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
-        
         term.open(terminalRef.current);
-        
-        // Zero-Lag WebGL Engine
-        try {
-            const webglAddon = new WebglAddon();
-            term.loadAddon(webglAddon);
-        } catch (e) { console.warn('WebGL not supported, falling back to DOM'); }
-
         setTimeout(() => fitAddon.fit(), 100);
         xtermRef.current = term;
 
+        const wsHost = import.meta.env.VITE_WS_URL || window.location.host;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const socket = new WebSocket(`${protocol}//${window.location.hostname}:3001?token=${token}&instanceId=${id}`);
+        const socket = new WebSocket(`${protocol}//${wsHost}?token=${token}&instanceId=${id}`);
         socketRef.current = socket;
 
         socket.onopen = () => {
-            term.writeln('\x1b[1;32m●\x1b[0m Google-Tier Zero-Lag Session Active');
+            term.writeln('\x1b[1;32m◆\x1b[0m V-PLATFORM Neural Cloud Active');
+            term.writeln('\x1b[1;34m│\x1b[0m Type \x1b[1;33mhelp\x1b[0m for available commands');
+            term.writeln('\x1b[1;34m│\x1b[0m Press \x1b[1;33m⌘K\x1b[0m for command palette');
             socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
         };
-
-        socket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'stats') setStats(prev => [...prev.slice(-19), data.data]);
-            } catch (e) { term.write(event.data); }
-        };
-
+        socket.onmessage = (ev) => { term.write(ev.data); };
         term.onData((data) => { if (socket.readyState === WebSocket.OPEN) socket.send(data); });
-        
+
         const resizer = () => {
             fitAddon.fit();
-            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            }
         };
         window.addEventListener('resize', resizer);
-
-        return () => { 
+        return () => {
             window.removeEventListener('resize', resizer);
-            socket.close(); 
-            term.dispose(); 
+            socket.close();
+            term.dispose();
         };
     }, [id, token, isMobile]);
 
-    const DevKeyboard = () => (
-        <div className="flex bg-[#111] border-t border-white/5 p-1 gap-1 overflow-x-auto no-scrollbar">
-            {[
-                { label: 'ESC', val: '\x1b' },
-                { label: 'TAB', val: '\t' },
-                { label: 'CTRL', val: '\x03' }, // Ctrl+C as default for this btn
-                { label: 'ALT', val: '\x1ba' },
-                { label: '←', val: '\x1b[D' },
-                { label: '↑', val: '\x1b[A' },
-                { label: '↓', val: '\x1b[B' },
-                { label: '→', val: '\x1b[C' },
-                { label: 'HOME', val: '\x1b[H' },
-                { label: 'END', val: '\x1b[F' },
-            ].map(k => (
-                <button 
-                    key={k.label} 
-                    onClick={() => sendKey(k.val)}
-                    className="bg-white/5 text-gray-400 px-3 py-2 rounded font-black text-[10px] active:bg-blue-600 active:text-white transition-all min-w-[50px]"
-                >
-                    {k.label}
-                </button>
-            ))}
-        </div>
-    );
+    useEffect(() => {
+        if (!id || !token) return;
+        const cleanup = initClipboardSync(id, token);
+        const unsub = onClipboard((text) => setClipboardText(text));
+        return () => { cleanup(); unsub(); };
+    }, [id, token]);
 
-    const MobileLayout = () => (
-        <div className="flex-1 flex flex-col overflow-hidden relative">
-            <div className="flex-1 overflow-hidden">
-                <AnimatePresence mode="wait">
-                    {mobileActiveTab === 'explorer' && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full bg-[#0a0a0a] flex flex-col p-4">
-                            <div className="flex items-center justify-between mb-4"><span className="text-xs font-black uppercase tracking-widest text-gray-500">Explorer</span><button onClick={() => fetchFiles(currentPath)}><RefreshCw size={14}/></button></div>
-                            <div className="flex-1 overflow-y-auto space-y-1">
-                                {currentPath && <button onClick={() => fetchFiles(currentPath.split('/').slice(0, -1).join('/'))} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-blue-500 bg-white/5 rounded">..</button>}
-                                {files.map(f => (
-                                    <button key={f.path} onClick={() => openFile(f)} className="w-full flex items-center gap-3 px-3 py-3 text-sm bg-white/5 rounded-xl border border-white/5">
-                                        {f.isDirectory ? <Folder size={18} className="text-blue-500" /> : <FileIcon size={18} className="text-gray-500" />}
-                                        <span className="truncate">{f.name}</span>
-                                    </button>
-                                ))}
+    const handleFileSelectForEditor = (file: FileItem) => openFile(file);
+
+    const renderTabContent = () => {
+        switch (activeTab) {
+            case 'terminal':
+                return <AITerminal onRunCommand={runCommand} />;
+            case 'editor':
+                return (
+                    <div className="h-full flex flex-col bg-black">
+                        {selectedFile && (
+                            <div className="flex items-center justify-between px-4 py-1.5 bg-[#111] border-b border-white/5">
+                                <span className="text-[10px] font-mono text-gray-500 truncate">{selectedFile.path}</span>
+                                <button onClick={saveFile}
+                                    className={`flex items-center gap-1 px-3 py-1 rounded-lg text-[10px] font-black transition-all ${isSaving ? 'bg-green-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'}`}>
+                                    <Save size={12} /> {isSaving ? 'SAVED' : 'SAVE'}
+                                </button>
                             </div>
-                        </motion.div>
-                    )}
-                    {mobileActiveTab === 'editor' && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full">
+                        )}
+                        <div className="flex-1">
                             {selectedFile ? (
-                                <Editor theme="vs-dark" defaultLanguage="javascript" value={fileContent} onMount={handleEditorDidMount} onChange={(val) => setFileContent(val || '')} options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true }} />
+                                <Editor theme="vs-dark" defaultLanguage="javascript" value={fileContent}
+                                    onMount={handleEditorDidMount}
+                                    onChange={(val) => setFileContent(val || '')}
+                                    options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} />
                             ) : (
-                                <div className="h-full flex flex-col items-center justify-center text-gray-700">
+                                <div className="h-full flex flex-col items-center justify-center text-gray-800">
                                     <Code size={40} className="mb-4 opacity-20" />
-                                    <p className="text-[10px] font-black">Open a file from Explorer</p>
+                                    <p className="text-[10px] font-black uppercase tracking-widest">Open a file from Files tab or Cmd+K</p>
                                 </div>
                             )}
-                        </motion.div>
-                    )}
-                    {mobileActiveTab === 'terminal' && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full flex flex-col">
-                            <div className="flex-1 bg-black p-2" ref={terminalRef}></div>
-                            <DevKeyboard />
-                        </motion.div>
-                    )}
-                    {mobileActiveTab === 'pc' && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full">
-                             <iframe src={`http://${instance?.slug}.localhost:3001`} className="w-full h-full border-0 bg-white" title="VDI" />
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-            {/* Floating Dock */}
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#111]/80 backdrop-blur-2xl border border-white/10 rounded-full px-6 py-3 flex gap-8 shadow-2xl z-50">
-                <button onClick={() => setMobileActiveTab('explorer')} className={mobileActiveTab === 'explorer' ? 'text-blue-500 scale-125 transition-all' : 'text-gray-500'}><Folder size={20}/></button>
-                <button onClick={() => setMobileActiveTab('editor')} className={mobileActiveTab === 'editor' ? 'text-blue-500 scale-125 transition-all' : 'text-gray-500'}><Code size={20}/></button>
-                <button onClick={() => setMobileActiveTab('terminal')} className={mobileActiveTab === 'terminal' ? 'text-blue-500 scale-125 transition-all' : 'text-gray-500'}><TermIcon size={20}/></button>
-                <button onClick={() => setMobileActiveTab('pc')} className={mobileActiveTab === 'pc' ? 'text-blue-500 scale-125 transition-all' : 'text-gray-500'}><Monitor size={20}/></button>
-            </div>
-        </div>
-    );
-
-    const DesktopLayout = () => (
-        <PanelGroup direction="horizontal">
-            {isSidebarOpen && (
-                <Panel defaultSize={18} minSize={10}>
-                    <aside className="h-full border-r border-white/5 flex flex-col bg-[#0d0d0d]">
-                        <div className="p-4 flex items-center justify-between border-b border-white/5">
-                            <span className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-600">Workspace</span>
-                            <div className="flex items-center gap-2">
-                                <input type="file" className="hidden" ref={fileInputRef} onChange={handleUpload} />
-                                <button onClick={() => fileInputRef.current?.click()} className="text-gray-600 hover:text-white" title="Upload"><UploadCloud size={12}/></button>
-                                <button onClick={createFile} className="text-gray-600 hover:text-white" title="File"><FilePlus size={12}/></button>
-                                <button onClick={() => fetchFiles(currentPath)} className="text-gray-600 hover:text-white"><RefreshCw size={12}/></button>
-                            </div>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-2">
-                            {currentPath && <button onClick={() => fetchFiles(currentPath.split('/').slice(0, -1).join('/'))} className="w-full flex items-center gap-2 px-3 py-1 text-xs text-blue-500 hover:bg-white/5 rounded">..</button>}
-                            {files.map(file => (
-                                <button key={file.path} onClick={() => openFile(file)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, file }); }} className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs rounded transition-all group ${selectedFile?.path === file.path ? 'bg-blue-600/10 text-blue-500' : 'hover:bg-white/5'}`}>
-                                    {file.isDirectory ? <Folder size={14} className="text-blue-500" /> : <FileIcon size={14} className="text-gray-600" />}
-                                    <span className="truncate group-hover:text-white">{file.name}</span>
-                                </button>
-                            ))}
-                        </div>
-                    </aside>
-                </Panel>
-            )}
-            <PanelResizeHandle className="w-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
-            <Panel defaultSize={62}>
-                {instance?.template === 'desktop' ? (
-                    <div className="h-full bg-black relative"><iframe src={`http://${instance.slug}.localhost:3001`} className="w-full h-full border-0 bg-white" title="VDI" /></div>
+                    </div>
+                );
+            case 'desktop':
+                return instance?.slug ? (
+                    <DesktopViewer url={`http://${instance.slug}.${window.location.hostname}:3001`} instanceSlug={instance.slug} />
                 ) : (
-                    <PanelGroup direction="vertical">
-                        <Panel defaultSize={65}>
-                            <div className="h-full bg-black relative">
-                                {selectedFile ? (
-                                    <Editor theme="vs-dark" defaultLanguage="javascript" value={fileContent} onMount={handleEditorDidMount} onChange={(val) => setFileContent(val || '')} options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, padding: { top: 16 } }} />
-                                ) : (
-                                    <div className="h-full flex flex-col items-center justify-center text-gray-800"><div className="w-12 h-12 bg-gray-900 rounded-2xl flex items-center justify-center mb-4"><FileIcon size={24} /></div><p className="text-[10px] font-black uppercase tracking-widest">Select file to edit</p></div>
-                                )}
-                            </div>
-                        </Panel>
-                        <PanelResizeHandle className="h-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
-                        <Panel defaultSize={35}><div className="h-full bg-black p-2 border-t border-white/5 relative"><div className="absolute top-2 right-4 text-[9px] font-black text-gray-800 tracking-widest z-10">CORE-SHELL</div><div className="w-full h-full" ref={terminalRef}></div></div></Panel>
-                    </PanelGroup>
-                )}
-            </Panel>
-            {isAIOpen && (
-                <>
-                    <PanelResizeHandle className="w-0.5 bg-white/5 hover:bg-blue-600/30 transition-all" />
-                    <Panel defaultSize={20}>
-                        <aside className="h-full bg-[#0d0d0d] border-l border-white/5 flex flex-col">
-                            <div className="p-4 border-b border-white/5 flex items-center justify-between"><span className="text-[10px] font-black text-purple-500 uppercase tracking-widest">AI Context-Engine</span><button onClick={() => setIsAIOpen(false)}><X size={16}/></button></div>
-                            <div className="flex-1 overflow-y-auto p-4 space-y-4">{aiMessages.map((msg, i) => (<div key={i} className={`p-4 rounded-2xl text-[11px] font-medium ${msg.role === 'user' ? 'bg-blue-600/10 text-blue-400 ml-4' : 'bg-purple-600/10 text-purple-400 mr-4'}`}>{msg.text}</div>))}</div>
-                            <div className="p-4 border-t border-white/5 bg-[#111]"><div className="relative"><input type="text" placeholder="Explain code..." className="w-full bg-black border border-white/10 rounded-xl pl-4 pr-10 py-3 text-[11px] focus:outline-none focus:border-purple-600 transition-all font-medium" value={aiInput} onChange={(e) => setAiInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleAISend()} /><button onClick={handleAISend} className="absolute right-3 top-2.5 p-1 text-gray-500 hover:text-purple-500"><Send size={16} /></button></div></div>
-                        </aside>
-                    </Panel>
-                </>
-            )}
-        </PanelGroup>
-    );
+                    <div className="h-full flex flex-col items-center justify-center text-gray-800 bg-black">
+                        <Monitor size={48} className="mb-4 opacity-20" />
+                        <p className="text-xs font-black uppercase tracking-widest">Start a Desktop instance from Dashboard</p>
+                    </div>
+                );
+            case 'files':
+                return id ? <FileManager instanceId={id} onOpenFile={handleFileSelectForEditor} /> : null;
+            case 'git':
+                return <GitClient instanceId={id || ''} onRunCommand={runCommand} />;
+            case 'agent':
+                return <AIAgent onRunCommand={runCommand}
+                    context={{ files: selectedFile ? [{ path: selectedFile.path, content: fileContent }] : [] }} />;
+            case 'versions':
+                return id ? <FileVersioning instanceId={id}
+                    onRestore={(content) => { setFileContent(content); setActiveTab('editor'); }} /> : null;
+            case 'apps':
+                return <AppDashboard onRunCommand={runCommand} />;
+            case 'stats':
+                return <SystemMonitor instanceId={id || ''} token={token} />;
+            case 'settings':
+                return (
+                    <SettingsPanel
+                        onClose={() => setActiveTab('terminal')}
+                        onResetDesktop={() => { if (confirm('Reset desktop session?')) window.location.reload(); }}
+                    />
+                );
+        }
+    };
 
     return (
-        <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col overflow-hidden text-gray-300 font-sans select-none">
-            <header className="h-14 bg-[#111] border-b border-white/5 flex items-center justify-between px-4 z-50">
-                <div className="flex items-center gap-3">
-                    <button onClick={() => navigate('/dashboard')} className="p-2 hover:bg-white/5 rounded-lg transition-all text-gray-400 hover:text-white"><ChevronLeft size={20} /></button>
+        <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col overflow-hidden text-gray-300 font-sans select-none relative">
+            {/* Ambient Neural Gradient Background */}
+            <div className="fixed inset-0 pointer-events-none z-0">
+                <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-blue-600/5 blur-[150px] rounded-full animate-pulse" style={{ animationDuration: '8s' }} />
+                <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-purple-600/5 blur-[150px] rounded-full animate-pulse" style={{ animationDuration: '12s' }} />
+            </div>
+
+            {/* Header - Minimal Neural Glass */}
+            <header className="h-11 bg-[#0d0d0d]/90 backdrop-blur-2xl border-b border-white/5 flex items-center justify-between px-3 z-50 shrink-0 relative">
+                <div className="flex items-center gap-2">
+                    <button onClick={() => navigate('/dashboard')}
+                        className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-all">
+                        <ChevronLeft size={16} />
+                    </button>
                     <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 bg-blue-600 rounded flex items-center justify-center"><TermIcon size={14} className="text-white" /></div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white hidden sm:block">V-IDE PRO</span>
+                        <div className="w-5 h-5 bg-gradient-to-br from-blue-500 to-indigo-600 rounded flex items-center justify-center shadow-lg shadow-blue-500/20">
+                            <TermIcon size={11} className="text-white" />
+                        </div>
+                        <span className="text-[8px] font-black uppercase tracking-[0.15em] text-white hidden sm:block">V-PLATFORM</span>
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                    {selectedFile && <button onClick={saveFile} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all ${isSaving ? 'bg-green-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'}`}><Save size={14} /> <span className="hidden sm:inline">{isSaving ? 'SAVED' : 'SAVE'}</span></button>}
-                    <button onClick={() => setIsAIOpen(!isAIOpen)} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all ${isAIOpen ? 'bg-purple-600 text-white' : 'bg-white/5 text-gray-400 hover:text-white'}`}><Sparkles size={14} /> <span className="hidden sm:inline">AI</span></button>
-                    <div className="h-4 w-px bg-white/10 mx-1"></div>
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-500/10 text-green-500 text-[9px] font-black border border-green-500/20">
-                        <Shield size={10} /> {isMobile ? 'PWA-NATIVE' : 'SECURE'}
+                <div className="flex items-center gap-1.5">
+                    <button onClick={() => setShowCommandPalette(true)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all">
+                        <Command size={12} /> <kbd className="text-[8px] font-black text-gray-700">⌘K</kbd>
+                    </button>
+
+                    <div className="h-3 w-px bg-white/10 mx-0.5" />
+
+                    {/* Neural AI Orb */}
+                    <button onClick={() => { setIsAIOrbExpanded(!isAIOrbExpanded); setIsAIOpen(!isAIOpen); }}
+                        className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[8px] font-black transition-all duration-500 ${isAIOpen ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' : 'bg-white/5 text-gray-400 hover:text-white'}`}>
+                        <Sparkles size={11} />
+                        <span className="hidden sm:inline">AI</span>
+                        {isAIOpen && (
+                            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-purple-400 rounded-full animate-ping" />
+                        )}
+                    </button>
+
+                    {isMobile && (
+                        <button onClick={() => setShowQuickActions(true)}
+                            className="p-1.5 rounded-lg bg-white/5 text-gray-400 hover:text-white">
+                            <Grid3X3 size={14} />
+                        </button>
+                    )}
+
+                    <div className="h-3 w-px bg-white/10 mx-0.5" />
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[7px] font-black border border-emerald-500/20">
+                        <Shield size={7} /> {isMobile ? 'MOBILE' : 'LIVE'}
                     </div>
                 </div>
             </header>
 
-            <div className="flex-1 flex overflow-hidden">
-                {isMobile ? <MobileLayout /> : <DesktopLayout />}
+            {/* Multi-Desktop bar */}
+            <MultiDesktop activeTab={activeTab} onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+
+            {/* Main content area */}
+            <div className="flex-1 flex overflow-hidden relative z-10">
+                <div className="flex-1 overflow-hidden">
+                    {renderTabContent()}
+                </div>
+
+                {/* AI Panel - Neural Glass */}
+                {isAIOpen && (
+                    <aside className="w-72 sm:w-80 border-l border-white/5 flex flex-col bg-[#0d0d0d]/95 backdrop-blur-2xl shrink-0 relative">
+                        <div className="absolute inset-0 bg-gradient-to-b from-purple-600/5 to-transparent pointer-events-none" />
+                        <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5 relative z-10">
+                            <span className="flex items-center gap-2 text-[8px] font-black text-purple-500 uppercase tracking-[0.15em]">
+                                <Sparkles size={10} /> Neural AI
+                            </span>
+                            <button onClick={() => { setIsAIOpen(false); setIsAIOrbExpanded(false); }} className="p-1 text-gray-500 hover:text-white"><X size={12} /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3 space-y-3 relative z-10">
+                            {aiMessages.length === 0 && (
+                                <div className="text-center py-8">
+                                    <Brain size={28} className="mx-auto mb-3 text-purple-500/30" />
+                                    <p className="text-xs font-bold text-gray-600 mb-1">Neural AI Context-Engine</p>
+                                    <p className="text-[9px] text-gray-800 leading-relaxed">
+                                        Ask questions about your code,<br />generate commands, or get help.
+                                    </p>
+                                </div>
+                            )}
+                            {aiMessages.map((msg, i) => (
+                                <div key={i}
+                                    className={`p-2.5 rounded-xl text-[9px] font-medium leading-relaxed ${msg.role === 'user' ? 'bg-blue-600/10 text-blue-400 ml-4 border border-blue-500/10' : 'bg-purple-600/10 text-purple-400 mr-4 border border-purple-500/10'}`}>
+                                    {msg.text}
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-3 border-t border-white/5 bg-[#111]/80 relative z-10">
+                            <div className="relative">
+                                <input type="text" placeholder="Ask Neural AI..."
+                                    className="w-full bg-black/80 border border-white/10 rounded-xl pl-3 pr-9 py-2 text-[10px] focus:outline-none focus:border-purple-600 transition-all font-medium"
+                                    value={aiInput}
+                                    onChange={(e) => setAiInput(e.target.value)}
+                                    onKeyDown={(e) => e.key === 'Enter' && handleAISend()} />
+                                <button onClick={handleAISend}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-purple-500">
+                                    <Send size={12} />
+                                </button>
+                            </div>
+                        </div>
+                    </aside>
+                )}
             </div>
 
-            {contextMenu && (
-                <div className="fixed bg-[#111] border border-white/10 rounded-lg shadow-2xl z-[100] p-1 min-w-[120px]" style={{ top: contextMenu.y, left: contextMenu.x }} onClick={() => setContextMenu(null)} onMouseLeave={() => setContextMenu(null)}>
-                    {!contextMenu.file?.isDirectory && <button onClick={() => contextMenu.file && handleDownload(contextMenu.file)} className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-white hover:bg-white/10 rounded transition-all"><DownloadCloud size={12} /> DOWNLOAD</button>}
-                    <button onClick={() => contextMenu.file && deleteFile(contextMenu.file)} className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-red-500 hover:bg-red-500/10 rounded transition-all"><Trash2 size={12} /> DELETE</button>
+            {/* Neural Dock - Floating Bottom Navigation (Mobile) / Side Dock (Desktop) */}
+            {isMobile ? (
+                <div className="relative z-20">
+                    <div className="bg-[#0d0d0d]/95 backdrop-blur-2xl border-t border-white/5 px-1 py-1">
+                        <div className="flex items-center justify-around">
+                            {NEURAL_TABS.map(tab => {
+                                const isActive = activeTab === tab.id;
+                                const Icon = tab.icon;
+                                return (
+                                    <button key={tab.id}
+                                        onClick={() => setActiveTab(tab.id)}
+                                        className={`relative flex flex-col items-center gap-0.5 py-1.5 px-2 rounded-xl transition-all duration-300 ${isActive ? 'text-white' : 'text-gray-700 hover:text-gray-500'}`}
+                                    >
+                                        {isActive && (
+                                            <div className={`absolute inset-0 rounded-xl bg-gradient-to-b ${tab.glow} border border-white/5`} />
+                                        )}
+                                        <Icon size={16} className="relative z-10" />
+                                        <span className={`relative z-10 text-[7px] font-black uppercase tracking-widest ${isActive ? 'opacity-100' : 'opacity-60'}`}>
+                                            {tab.label}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                <div className="relative z-20">
+                    <div className="bg-[#0d0d0d]/95 backdrop-blur-2xl border-t border-white/5 px-2 py-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                            {NEURAL_TABS.map(tab => {
+                                const isActive = activeTab === tab.id;
+                                const Icon = tab.icon;
+                                return (
+                                    <button key={tab.id}
+                                        onClick={() => setActiveTab(tab.id)}
+                                        className={`relative flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all duration-300 ${isActive ? 'text-white' : 'text-gray-700 hover:text-gray-500'}`}
+                                    >
+                                        {isActive && (
+                                            <div className={`absolute inset-0 rounded-lg bg-gradient-to-r ${tab.glow} border border-white/5`} />
+                                        )}
+                                        <Icon size={13} className="relative z-10" />
+                                        <span className="relative z-10 text-[8px] font-black uppercase tracking-widest">{tab.label}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Command Palette */}
+            <CommandPalette
+                isOpen={showCommandPalette}
+                onClose={() => setShowCommandPalette(false)}
+                onSwitchTab={(tab) => setActiveTab(tab as TabId)}
+                onOpenFile={openFileByPath}
+                onRunCommand={runCommand}
+                onInstallPackage={(pkg) => runCommand(`apt install -y ${pkg}`)}
+                files={allFiles}
+            />
+
+            {/* Quick Actions */}
+            <QuickActions
+                isOpen={showQuickActions}
+                onClose={() => setShowQuickActions(false)}
+                activeTab={activeTab}
+                onTabChange={(tab) => setActiveTab(tab as TabId)}
+                onRestart={() => window.location.reload()}
+                onShare={() => {
+                    navigator.clipboard.writeText(window.location.href).catch(() => {});
+                }}
+            />
+
+            {/* Neural Clipboard Toast */}
+            {clipboardText && (
+                <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-gradient-to-r from-blue-600/90 to-purple-600/90 text-white px-4 py-2 rounded-full text-[9px] font-bold shadow-2xl shadow-blue-600/30 z-50 backdrop-blur-xl border border-white/10">
+                    <span className="flex items-center gap-2">
+                        <Zap size={10} className="text-yellow-400" />
+                        {clipboardText.slice(0, 50)}{clipboardText.length > 50 ? '...' : ''}
+                    </span>
                 </div>
             )}
         </div>
